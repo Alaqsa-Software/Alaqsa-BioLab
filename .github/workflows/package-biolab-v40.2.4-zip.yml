@@ -1,0 +1,41 @@
+name: Package BioLab v40.2.4 release ZIPs
+on:
+  push:
+    branches: ['ops-biolab-v40.2.4-zip']
+    paths: ['.github/workflows/package-biolab-v40.2.4-zip.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: Full
+            sha256: 22f4be88c909b071d1177172c409b197fd14c1d60d3661a90a83ed9c9fb0bb58
+          - kind: Update
+            sha256: 5bae9d311373ca83b87860d95de0e94f1ba58eec254d98d8a8629705c7059bcd
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PACKAGE_KIND: ${{ matrix.kind }}
+      PACKAGE_SHA256: ${{ matrix.sha256 }}
+    steps:
+      - name: Verify, archive, and attach the tested installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='v40.2.4'
+          installer="ALAQSABIOLAB_Setup_${PACKAGE_KIND}_${tag}.exe"
+          archive="ALAQSABIOLAB_Setup_${PACKAGE_KIND}_${tag}.zip"
+          gh release download "$tag" --pattern "$installer"
+          printf '%s  %s\n' "$PACKAGE_SHA256" "$installer" | sha256sum --check --strict
+          zip -q -6 "$archive" "$installer"
+          unzip -tq "$archive"
+          test "$(unzip -p "$archive" "$installer" | sha256sum | cut -d' ' -f1)" = "$PACKAGE_SHA256"
+          gh release upload "$tag" "$archive"
+          sha256sum "$archive"
