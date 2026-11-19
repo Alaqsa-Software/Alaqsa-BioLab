@@ -1,0 +1,64 @@
+name: Package BioLab installers as ZIP
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: biolab-release-zip-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ github.event.release.id }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Add ZIP copies of BioLab installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          if [[ -z "$RELEASE_ID" ]]; then
+            RELEASE_ID=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" |
+              jq -r --arg tag "$RELEASE_TAG" '.[] | select(.tag_name == $tag) | .id')
+          fi
+          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]] || { echo 'Release not found'; exit 1; }
+
+          assets=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" | jq 'add // []')
+          installers=$(jq -r '.[] | select(.state == "uploaded" and (.name | test("^ALAQSABIOLAB_Setup_(Full|Update)_v[0-9]+(\\.[0-9]+){1,3}\\.exe$"))) | [.id, .name, (.digest // "")] | @tsv' <<<"$assets")
+          if [[ -z "$installers" ]]; then
+            echo 'No BioLab installers found.'
+            exit 0
+          fi
+          while IFS=$'\t' read -r id name digest; do
+            archive="${name%.exe}.zip"
+            if jq -e --arg name "$archive" 'any(.[]; .name == $name and .state == "uploaded")' <<<"$assets" >/dev/null; then
+              echo "Already attached: $archive"
+              continue
+            fi
+            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$name"
+            if [[ "$digest" == sha256:* ]]; then
+              printf '%s  %s\n' "${digest#sha256:}" "$name" | sha256sum --check -
+            fi
+            zip -q "$archive" "$name"
+            unzip -tq "$archive"
+            curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Content-Type: application/zip' \
+              --data-binary "@$archive" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$archive" >/dev/null
+            echo "Attached: $archive"
+          done <<<"$installers"
